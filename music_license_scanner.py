@@ -256,6 +256,66 @@ def check_ncs_artist(artist):
     return artist.lower().strip() in NCS_ARTISTS
 
 
+def artist_from_filename(filepath):
+    """
+    Try to extract an artist name from a filename.
+    Handles common patterns like:
+      artist - title.mp3
+      artist___title.wav
+      artist_title.mp3
+    Returns lowercased artist string or empty string.
+    """
+    import re
+    name = os.path.splitext(os.path.basename(filepath))[0]
+    # Normalize separators: triple underscores, dashes, etc.
+    name = re.sub(r"___+", " - ", name)
+    name = re.sub(r"_", " ", name)
+    # Try "artist - title" pattern
+    if " - " in name:
+        return name.split(" - ")[0].strip().lower()
+    return ""
+    """Return True if the artist name matches a known NCS roster artist."""
+    if not artist:
+        return False
+    return artist.lower().strip() in NCS_ARTISTS
+
+
+def artists_match(artist_a, artist_b):
+    """
+    Returns True if two artist names are plausibly the same.
+    Handles minor differences like featuring credits, case, punctuation.
+    Returns False if either is empty or they are clearly different.
+    """
+    if not artist_a or not artist_b:
+        return False
+
+    def normalize(s):
+        import re
+        s = s.lower().strip()
+        # Remove common featuring patterns
+        s = re.sub(r"\s*(feat\.?|ft\.?|featuring|vs\.?|&|and)\s.*", "", s)
+        # Remove punctuation and extra spaces
+        s = re.sub(r"[^\w\s]", "", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    a = normalize(artist_a)
+    b = normalize(artist_b)
+
+    if not a or not b:
+        return False
+
+    # Exact match after normalization
+    if a == b:
+        return True
+
+    # One contains the other (e.g. "Da Tweekaz" vs "Da Tweekaz feat. HALIENE")
+    if a in b or b in a:
+        return True
+
+    return False
+
+
 # ==============================================================================
 #  EXTERNAL API LOOKUPS
 # ==============================================================================
@@ -454,15 +514,27 @@ def scan_library(folder):
                     if not row["title"]  and best["title"]:  row["title"]  = best["title"]
                     if not row["artist"] and best["artist"]: row["artist"] = best["artist"]
 
+                    # Check if the AcousticID artist matches the tagged artist.
+                    # Fall back to artist extracted from filename if no tag artist.
+                    # If they clearly don't match, don't trust the license from this match.
+                    tag_artist      = tags.get("artist", tags.get("TPE1", "")) or artist_from_filename(filepath)
+                    artist_trusted  = (
+                        not tag_artist  # nothing to compare against — trust the match
+                        or artists_match(tag_artist, best["artist"])
+                    )
+                    if not artist_trusted:
+                        print(f"  WARNING: artist mismatch — tags/filename say '{tag_artist}', "
+                              f"AcousticID says '{best['artist']}' — skipping license from this match")
+
                     # --- Step 7: MusicBrainz license lookup ---
-                    if best["recording_id"] and row["license"] == "unknown":
+                    if artist_trusted and best["recording_id"] and row["license"] == "unknown":
                         mb_lic, mb_note = lookup_musicbrainz(best["recording_id"])
                         if mb_lic:
                             row["license"] = mb_lic
                             row["notes"]   = mb_note
 
                     # --- Step 8: NCS check on AcousticID artist ---
-                    if row["license"] == "unknown" and check_ncs_artist(best["artist"]):
+                    if artist_trusted and row["license"] == "unknown" and check_ncs_artist(best["artist"]):
                         row["license"] = "cc by"
                         row["source"]  = "ncs"
                         row["notes"]   = "AcousticID artist matches NCS roster — CC BY"
@@ -476,9 +548,8 @@ def scan_library(folder):
                             row["notes"]   = "License found on Jamendo"
 
                     # --- Step 10: High-confidence fallback ---
-                    # If AcousticID identified this track with good confidence and none of
-                    # the free-music checks matched, it's almost certainly a commercial release.
-                    if row["license"] == "unknown" and best["score"] >= 0.8:
+                    # Only apply if artist matches (or no tag artist to compare against)
+                    if artist_trusted and row["license"] == "unknown" and best["score"] >= 0.8:
                         row["license"] = "assumed commercial"
                         row["notes"]   = (
                             f"AcousticID matched with {best['score']} confidence "
