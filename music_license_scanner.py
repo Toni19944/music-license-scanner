@@ -92,7 +92,8 @@ YOUTUBE_SAFE_NOTE = {
     "cc by-nc":          "CAUTION - non-commercial only, no monetization",
     "cc by-nc-sa":       "CAUTION - non-commercial only, no monetization",
     "cc by-nc-nd":       "CAUTION - non-commercial only, no monetization",
-    "all rights reserved": "DO NOT USE - all rights reserved",
+    "all rights reserved":  "DO NOT USE - all rights reserved (confirmed)",
+    "assumed commercial":   "DO NOT USE - assumed commercial (AcousticID match, no CC found)",
     "unknown":           "UNKNOWN - verify manually",
 }
 
@@ -474,6 +475,16 @@ def scan_library(folder):
                             row["source"]  = j_src or "jamendo"
                             row["notes"]   = "License found on Jamendo"
 
+                    # --- Step 10: High-confidence fallback ---
+                    # If AcousticID identified this track with good confidence and none of
+                    # the free-music checks matched, it's almost certainly a commercial release.
+                    if row["license"] == "unknown" and best["score"] >= 0.8:
+                        row["license"] = "assumed commercial"
+                        row["notes"]   = (
+                            f"AcousticID matched with {best['score']} confidence "
+                            f"— assumed commercial (no CC license found)"
+                        )
+
                 time.sleep(SLEEP_BETWEEN_REQUESTS)
 
             # --- Step 10: Final verdict ---
@@ -485,7 +496,9 @@ def scan_library(folder):
             elif lic in SAFE_FOR_NONMONETIZED:
                 row["safe_to_use"] = "CAUTION - non-commercial only"
             elif lic == "all rights reserved":
-                row["safe_to_use"] = "NO - all rights reserved"
+                row["safe_to_use"] = "NO - all rights reserved (confirmed)"
+            elif lic == "assumed commercial":
+                row["safe_to_use"] = "NO - assumed commercial (verify if unsure)"
             else:
                 row["safe_to_use"] = "UNKNOWN - verify manually"
 
