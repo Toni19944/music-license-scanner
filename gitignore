@@ -1,0 +1,14 @@
+# Never commit the actual working script with real API keys
+music_license_scanner.local.py
+
+# Output files
+*.csv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS junk
+.DS_Store
+Thumbs.db
