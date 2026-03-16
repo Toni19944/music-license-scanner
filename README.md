@@ -44,9 +44,9 @@ pip install -r requirements.txt
 
 To verify it's working, open a terminal and run:
 ```bash
-fpcalc --version
+fpcalc
 ```
-If it prints usage info (even an error about no file), it's installed correctly.
+If it prints `ERROR: No input files` — that's correct and means it's installed and found. If it says `command not found` or similar, it's not in your PATH yet.
 
 **3. Get a free AcousticID API key**
 
