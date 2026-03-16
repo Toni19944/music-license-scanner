@@ -352,31 +352,40 @@ def lookup_musicbrainz(recording_id):
     try:
         result = musicbrainzngs.get_recording_by_id(
             recording_id,
-            includes=["releases", "release-groups", "artist-credits",
-                      "tags", "user-tags", "labels"]
+            includes=["releases", "artist-credits", "tags", "user-tags", "labels"]
         )
-        rec  = result.get("recording", {})
-        tags = [t["name"].lower() for t in rec.get("tag-list", [])]
+        rec      = result.get("recording", {})
+        tags     = [t["name"].lower() for t in rec.get("tag-list", [])]
+        releases = rec.get("release-list", [])
+
+        print(f"  [MB] releases={len(releases)} tags={tags[:3] if tags else '[]'}")
 
         # Explicit CC license in MusicBrainz tags
         for tag in tags:
             for lic in YOUTUBE_SAFE_NOTE:
                 if lic in tag:
+                    print(f"  [MB] CC tag found: {tag}")
                     return lic, f"CC tag in MusicBrainz: {tag}"
 
         # Label present = commercial release
-        for release in rec.get("release-list", []):
-            for li in release.get("label-info-list", []):
+        for release in releases:
+            label_info = release.get("label-info-list", [])
+            print(f"  [MB] release '{release.get('title', '?')}' label-info count: {len(label_info)}")
+            for li in label_info:
                 label_name = li.get("label", {}).get("name", "")
                 if label_name:
+                    print(f"  [MB] label found: {label_name}")
                     return "all rights reserved", f"Label: {label_name}"
 
         # In MusicBrainz but no label info — still likely commercial
-        if rec.get("release-list"):
+        if releases:
+            print(f"  [MB] found in MusicBrainz but no label data")
             return "all rights reserved", "Found in MusicBrainz (no CC tags, no label)"
 
+        print(f"  [MB] no releases found")
         return None, ""
-    except Exception:
+    except Exception as e:
+        print(f"  [MB] error: {e}")
         return None, ""
 
 
