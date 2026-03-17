@@ -2,7 +2,7 @@
 
 A Python tool that scans your local music library and attempts to determine the license of each track — so you know what's safe to use in YouTube videos or other content.
 
-It reads file tags, checks artist names against known free music rosters (like NCS), fingerprints audio via AcousticID, cross-references MusicBrainz for label and license data, and optionally queries the Jamendo API. Results are saved to a CSV you can filter in Excel or Google Sheets.
+It reads file tags, checks artist names against known free music rosters (like NCS), fingerprints audio via AcousticID, cross-references MusicBrainz for license data, and optionally queries the Jamendo API. Results are saved to a CSV you can filter in Excel or Google Sheets.
 
 ---
 
@@ -12,8 +12,9 @@ It reads file tags, checks artist names against known free music rosters (like N
 |---|---|
 | `YES - monetization OK` | CC0, CC BY, CC BY-SA, Public Domain — fully free to use |
 | `CAUTION - non-commercial only` | CC BY-NC variants — free but no ads/monetization |
-| `NO - all rights reserved (confirmed)` | Confirmed commercial release via MusicBrainz label data |
-| `NO - assumed commercial (verify if unsure)` | AcousticID matched with high confidence but no CC license found — almost certainly commercial |
+| `VERIFY - possibly free (Jamendo match)` | Jamendo found a matching track with a CC license — verify before use |
+| `NO - all rights reserved (confirmed)` | Confirmed commercial release via MusicBrainz |
+| `NO - assumed commercial (verify if unsure)` | AcousticID matched with high confidence but no CC license found |
 | `UNKNOWN - verify manually` | Could not identify the track at all |
 
 ---
@@ -115,13 +116,14 @@ After scanning, run the splitter to separate results into individual CSVs by cat
 python split_by_license.py
 ```
 
-This produces five files in the same folder:
+This produces six files in the same folder:
 
 | File | Contents |
 |---|---|
 | `free_monetization_ok.csv` | Tracks confirmed free for monetized use |
 | `free_noncommercial_only.csv` | Free tracks limited to non-commercial use |
-| `not_free_confirmed.csv` | Confirmed commercial releases (label found in MusicBrainz) |
+| `assumed_free_verify.csv` | Jamendo matched — possibly free, verify before use |
+| `not_free_confirmed.csv` | Confirmed commercial releases (found in MusicBrainz) |
 | `not_free_assumed.csv` | Likely commercial — AcousticID matched with high confidence but no CC license found |
 | `unknown.csv` | Tracks that could not be identified at all |
 
@@ -145,7 +147,7 @@ The scan produces `music_license_report.csv` in the same folder as the script. I
 | `title` | Track title (from tags or AcousticID) |
 | `artist` | Artist name |
 | `album` | Album name |
-| `license` | Detected license (e.g. `cc by`, `all rights reserved`, `assumed commercial`, `unknown`) |
+| `license` | Detected license (e.g. `cc by`, `all rights reserved`, `assumed commercial`, `assumed free`, `unknown`) |
 | `source` | Where the license info came from (e.g. `ncs`, `jamendo`, `incompetech`) |
 | `safe_to_use` | Plain-English verdict — best column to filter on |
 | `youtube_verdict` | Detailed verdict with monetization guidance |
@@ -153,9 +155,9 @@ The scan produces `music_license_report.csv` in the same folder as the script. I
 | `confidence` | AcousticID match confidence score (0.0–1.0) |
 | `notes` | How the license was determined, or any warnings |
 
-### Filtering in Excel
+### Filtering in Google Sheets / Excel
 
-1. Open the CSV → click any cell → **Data → Filter**
+1. Open the CSV → **Data → Create a filter**
 2. Click the dropdown arrow on the `safe_to_use` column
 3. Select only `YES - monetization OK` (or include `CAUTION` if your video is non-monetized)
 
@@ -168,14 +170,16 @@ Or just run `split_by_license.py` and open `free_monetization_ok.csv` directly.
 For each audio file, the scanner runs these steps in order and stops as soon as a license is found:
 
 1. **Read file tags** — checks `license`, `comment`, `copyright`, and URL fields for embedded license text
-2. **URL tag check** — if a tag links to jamendo.com, incompetech.com, ncs.io etc., the license is inferred from that
-3. **NCS artist check** — if the tagged artist matches the NCS roster, it's marked CC BY immediately, no fingerprinting needed
-4. **File path check** — folder names like `NCS`, `incompetech`, or `freemusicarchive` in the path are also detected
-5. **AcousticID fingerprint** — audio is fingerprinted and matched against the AcousticID database
-6. **MusicBrainz lookup** — the identified recording is looked up for label and license data; a confirmed label = `all rights reserved`
-7. **NCS check on AcousticID artist** — catches NCS tracks that had no tags but were identified by fingerprint
-8. **Jamendo API** — searches Jamendo by artist + title for CC license info
-9. **High-confidence fallback** — if AcousticID matched with 80%+ confidence and none of the above found a free license, the track is marked `assumed commercial`
+2. **NCS Release tag check** — if any tag value contains "NCS Release", marks it CC BY immediately
+3. **URL tag check** — if a tag links to jamendo.com, incompetech.com, ncs.io etc., the license is inferred from that
+4. **NCS artist check** — if the tagged artist matches the NCS roster, it's marked CC BY immediately, no fingerprinting needed
+5. **File path / filename check** — detects `[NCS Release]` in filenames, and folder names like `incompetech` or `freemusicarchive` in the path
+6. **AcousticID fingerprint** — audio is fingerprinted and matched against the AcousticID database
+7. **Artist mismatch check** — if the AcousticID artist doesn't match the file tags or filename, the match is distrusted and skipped
+8. **NCS check on AcousticID artist** — catches NCS tracks with no tags but identified by fingerprint (runs before MusicBrainz so NCS tracks aren't marked commercial)
+9. **MusicBrainz lookup** — the identified recording is looked up via the MusicBrainz API; if found = `all rights reserved`
+10. **Jamendo API** — searches Jamendo by artist + title; match returns `assumed free` (not confirmed)
+11. **High-confidence fallback** — if AcousticID matched with 80%+ confidence and no free license was found, marks as `assumed commercial`
 
 ---
 
@@ -190,8 +194,9 @@ For each audio file, the scanner runs these steps in order and stops as soon as 
 ## Limitations
 
 - **Results are best-effort, not legal advice.** Always verify manually before using a track in commercial or monetized content.
-- AcousticID and MusicBrainz coverage varies — obscure or poorly tagged tracks may not be identified.
+- AcousticID fingerprinting isn't perfect — similar-sounding tracks can cause false matches. Always cross-check the `acoustid_match` column against the actual artist/title.
 - The NCS artist list is manually maintained and may not be fully up to date.
+- **Jamendo results are not confirmed** — they are text-based matches and can return the wrong track. Always verify anything in `assumed_free_verify.csv` before using it.
 - The `assumed commercial` label is an inference based on AcousticID confidence, not a confirmed lookup — check `not_free_assumed.csv` if you think a track has been miscategorised.
 - Tracks with no tags, no AcousticID match, and no Jamendo match will remain `unknown`.
 
