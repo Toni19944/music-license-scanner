@@ -39,7 +39,6 @@ import csv
 import time
 import threading
 import requests
-import musicbrainzngs
 import acoustid
 
 
@@ -97,9 +96,6 @@ YOUTUBE_SAFE_NOTE = {
     "assumed free":          "VERIFY - possibly free (Jamendo match, not confirmed)",
     "unknown":               "UNKNOWN - verify manually",
 }
-
-musicbrainzngs.set_useragent("MusicLicenseScanner", "1.0",
-                             "https://github.com/user/music-license-scanner")
 
 
 # ==============================================================================
@@ -350,17 +346,27 @@ def fingerprint_and_lookup(filepath):
 
 def lookup_musicbrainz(recording_id):
     """
-    Look up a MusicBrainz recording by ID via musicbrainzngs.
+    Look up a MusicBrainz recording by ID via direct HTTP request.
     Returns (license_or_None, note_string).
     """
     try:
-        result   = musicbrainzngs.get_recording_by_id(
-            recording_id,
-            includes=["releases", "artist-credits", "tags", "user-tags"]
-        )
-        rec      = result.get("recording", {})
-        tags     = [t["name"].lower() for t in rec.get("tag-list", [])]
-        releases = rec.get("release-list", [])
+        url     = f"https://musicbrainz.org/ws/2/recording/{recording_id}"
+        params  = {"inc": "releases+tags", "fmt": "json"}
+        headers = {"User-Agent": "MusicLicenseScanner/1.0 (https://github.com/user/music-license-scanner)"}
+        resp    = requests.get(url, params=params, headers=headers, timeout=8)
+
+        if resp.status_code == 429:
+            print(f"  [MB] rate limited — waiting 2s")
+            time.sleep(2)
+            resp = requests.get(url, params=params, headers=headers, timeout=8)
+
+        if resp.status_code != 200:
+            print(f"  [MB] HTTP {resp.status_code} for {recording_id}")
+            return None, ""
+
+        data     = resp.json()
+        tags     = [t["name"].lower() for t in data.get("tags", [])]
+        releases = data.get("releases", [])
 
         print(f"  [MB] releases={len(releases)} tags={tags[:3] if tags else '[]'}")
 
