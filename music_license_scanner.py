@@ -39,7 +39,6 @@ import csv
 import time
 import threading
 import requests
-import musicbrainzngs
 import acoustid
 
 
@@ -96,9 +95,6 @@ YOUTUBE_SAFE_NOTE = {
     "assumed commercial":   "DO NOT USE - assumed commercial (AcousticID match, no CC found)",
     "unknown":           "UNKNOWN - verify manually",
 }
-
-musicbrainzngs.set_useragent("MusicLicenseScanner", "1.0",
-                             "https://github.com/user/music-license-scanner")
 
 
 # ==============================================================================
@@ -345,42 +341,37 @@ def fingerprint_and_lookup(filepath):
 
 def lookup_musicbrainz(recording_id):
     """
-    Look up a MusicBrainz recording by ID.
+    Look up a MusicBrainz recording by ID via direct HTTP request.
     Returns (license_or_None, note_string).
-    Infers "all rights reserved" if a commercial label is found with no CC tags.
     """
     try:
-        result = musicbrainzngs.get_recording_by_id(
-            recording_id,
-            includes=["releases", "artist-credits", "tags", "user-tags", "labels"]
-        )
-        rec      = result.get("recording", {})
-        tags     = [t["name"].lower() for t in rec.get("tag-list", [])]
-        releases = rec.get("release-list", [])
+        url    = f"https://musicbrainz.org/ws/2/recording/{recording_id}"
+        params = {"inc": "releases+tags", "fmt": "json"}
+        headers = {"User-Agent": "MusicLicenseScanner/1.0 (https://github.com/user/music-license-scanner)"}
+        resp   = requests.get(url, params=params, headers=headers, timeout=8)
+
+        if resp.status_code != 200:
+            print(f"  [MB] HTTP {resp.status_code} for {recording_id}")
+            return None, ""
+
+        data     = resp.json()
+        tags     = [t["name"].lower() for t in data.get("tags", [])]
+        releases = data.get("releases", [])
 
         print(f"  [MB] releases={len(releases)} tags={tags[:3] if tags else '[]'}")
 
-        # Explicit CC license in MusicBrainz tags
+        # Explicit CC license in tags
         for tag in tags:
             for lic in YOUTUBE_SAFE_NOTE:
                 if lic in tag:
                     print(f"  [MB] CC tag found: {tag}")
                     return lic, f"CC tag in MusicBrainz: {tag}"
 
-        # Label present = commercial release
-        for release in releases:
-            label_info = release.get("label-info-list", [])
-            print(f"  [MB] release '{release.get('title', '?')}' label-info count: {len(label_info)}")
-            for li in label_info:
-                label_name = li.get("label", {}).get("name", "")
-                if label_name:
-                    print(f"  [MB] label found: {label_name}")
-                    return "all rights reserved", f"Label: {label_name}"
-
-        # In MusicBrainz but no label info — still likely commercial
+        # Found in MusicBrainz = commercial
         if releases:
-            print(f"  [MB] found in MusicBrainz but no label data")
-            return "all rights reserved", "Found in MusicBrainz (no CC tags, no label)"
+            title = releases[0].get("title", "?")
+            print(f"  [MB] confirmed commercial: '{title}'")
+            return "all rights reserved", f"Found in MusicBrainz: {title}"
 
         print(f"  [MB] no releases found")
         return None, ""
@@ -392,6 +383,7 @@ def lookup_musicbrainz(recording_id):
 def lookup_jamendo(title, artist):
     """
     Search Jamendo for a track by title + artist and return its CC license.
+    Requires both title AND artist to match closely to avoid false positives.
     Returns (license_or_None, source_or_None).
     """
     if JAMENDO_CLIENT_ID == "YOUR_JAMENDO_CLIENT_ID_HERE":
@@ -407,15 +399,28 @@ def lookup_jamendo(title, artist):
         resp    = requests.get("https://api.jamendo.com/v3.0/tracks/",
                                params=params, timeout=5)
         results = resp.json().get("results", [])
-        title_l = title.lower()
+        title_l  = title.lower().strip()
+        artist_l = artist.lower().strip()
         for track in results:
-            if title_l in track.get("name", "").lower():
+            track_title  = track.get("name", "").lower().strip()
+            track_artist = track.get("artist_name", "").lower().strip()
+
+            # Require both title AND artist to match closely
+            title_match  = title_l in track_title or track_title in title_l
+            artist_match = artists_match(artist_l, track_artist)
+
+            if title_match and artist_match:
                 lic_url = track.get("license_ccurl", "") or track.get("licenseurl", "")
                 lic     = parse_license_from_url(lic_url)
                 if lic:
+                    print(f"  [Jamendo] matched: '{track_artist} - {track_title}' -> {lic}")
                     return lic, "jamendo"
+            else:
+                print(f"  [Jamendo] rejected: '{track_artist} - {track_title}' "
+                      f"(title_match={title_match}, artist_match={artist_match})")
         return None, None
-    except Exception:
+    except Exception as e:
+        print(f"  [Jamendo] error: {e}")
         return None, None
 
 

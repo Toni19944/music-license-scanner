@@ -1,4 +1,3 @@
 pyacoustid
 mutagen
-musicbrainzngs
 requests
