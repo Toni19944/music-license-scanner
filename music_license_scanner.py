@@ -39,6 +39,7 @@ import csv
 import time
 import threading
 import requests
+import musicbrainzngs
 import acoustid
 
 
@@ -91,10 +92,14 @@ YOUTUBE_SAFE_NOTE = {
     "cc by-nc":          "CAUTION - non-commercial only, no monetization",
     "cc by-nc-sa":       "CAUTION - non-commercial only, no monetization",
     "cc by-nc-nd":       "CAUTION - non-commercial only, no monetization",
-    "all rights reserved":  "DO NOT USE - all rights reserved (confirmed)",
-    "assumed commercial":   "DO NOT USE - assumed commercial (AcousticID match, no CC found)",
-    "unknown":           "UNKNOWN - verify manually",
+    "all rights reserved":   "DO NOT USE - all rights reserved (confirmed)",
+    "assumed commercial":    "DO NOT USE - assumed commercial (AcousticID match, no CC found)",
+    "assumed free":          "VERIFY - possibly free (Jamendo match, not confirmed)",
+    "unknown":               "UNKNOWN - verify manually",
 }
+
+musicbrainzngs.set_useragent("MusicLicenseScanner", "1.0",
+                             "https://github.com/user/music-license-scanner")
 
 
 # ==============================================================================
@@ -231,9 +236,13 @@ def guess_from_filepath(filepath):
     Check the file path and folder names for hints about known free music sources.
     Returns (license_or_None, source_or_None, note).
     """
-    path_lower = filepath.lower()
+    path_lower     = filepath.lower()
+    filename_lower = os.path.splitext(os.path.basename(filepath))[0].lower()
+
     if "nocopyrightsounds" in path_lower or "\\ncs\\" in path_lower or "/ncs/" in path_lower:
         return "cc by", "ncs", "NCS found in file path"
+    if "[ncs release]" in filename_lower or "(ncs release)" in filename_lower:
+        return "cc by", "ncs", "NCS Release tag found in filename"
     if "incompetech" in path_lower:
         return "cc by", "incompetech", "Incompetech found in file path"
     if "freemusicarchive" in path_lower or "\\fma\\" in path_lower or "/fma/" in path_lower:
@@ -341,22 +350,17 @@ def fingerprint_and_lookup(filepath):
 
 def lookup_musicbrainz(recording_id):
     """
-    Look up a MusicBrainz recording by ID via direct HTTP request.
+    Look up a MusicBrainz recording by ID via musicbrainzngs.
     Returns (license_or_None, note_string).
     """
     try:
-        url    = f"https://musicbrainz.org/ws/2/recording/{recording_id}"
-        params = {"inc": "releases+tags", "fmt": "json"}
-        headers = {"User-Agent": "MusicLicenseScanner/1.0 (https://github.com/user/music-license-scanner)"}
-        resp   = requests.get(url, params=params, headers=headers, timeout=8)
-
-        if resp.status_code != 200:
-            print(f"  [MB] HTTP {resp.status_code} for {recording_id}")
-            return None, ""
-
-        data     = resp.json()
-        tags     = [t["name"].lower() for t in data.get("tags", [])]
-        releases = data.get("releases", [])
+        result   = musicbrainzngs.get_recording_by_id(
+            recording_id,
+            includes=["releases", "artist-credits", "tags", "user-tags"]
+        )
+        rec      = result.get("recording", {})
+        tags     = [t["name"].lower() for t in rec.get("tag-list", [])]
+        releases = rec.get("release-list", [])
 
         print(f"  [MB] releases={len(releases)} tags={tags[:3] if tags else '[]'}")
 
@@ -413,15 +417,15 @@ def lookup_jamendo(title, artist):
                 lic_url = track.get("license_ccurl", "") or track.get("licenseurl", "")
                 lic     = parse_license_from_url(lic_url)
                 if lic:
-                    print(f"  [Jamendo] matched: '{track_artist} - {track_title}' -> {lic}")
-                    return lic, "jamendo"
+                    print(f"  [Jamendo] matched: '{track_artist} - {track_title}' -> {lic} (assumed free)")
+                    return "assumed free", "jamendo", lic
             else:
                 print(f"  [Jamendo] rejected: '{track_artist} - {track_title}' "
                       f"(title_match={title_match}, artist_match={artist_match})")
-        return None, None
+        return None, None, None
     except Exception as e:
         print(f"  [Jamendo] error: {e}")
-        return None, None
+        return None, None, None
 
 
 # ==============================================================================
@@ -485,6 +489,14 @@ def scan_library(folder):
             if src_tags and not row["source"]:
                 row["source"] = src_tags
 
+            # --- Step 2b: NCS Release in any tag value ---
+            if row["license"] == "unknown":
+                all_tag_values = " ".join(str(v) for v in tags.values()).lower()
+                if "ncs release" in all_tag_values:
+                    row["license"] = "cc by"
+                    row["source"]  = "ncs"
+                    row["notes"]   = "NCS Release found in file tags — CC BY"
+
             # --- Step 3: License from URL-type tags ---
             if row["license"] == "unknown":
                 lic_url, src_url = guess_from_url_tags(tags)
@@ -540,26 +552,27 @@ def scan_library(folder):
                         print(f"  WARNING: artist mismatch — tags/filename say '{tag_artist}', "
                               f"AcousticID says '{best['artist']}' — skipping license from this match")
 
-                    # --- Step 7: MusicBrainz license lookup ---
+                    # --- Step 7: NCS check on AcousticID artist (before MusicBrainz!) ---
+                    # Must run before MB lookup so NCS tracks aren't marked commercial
+                    if artist_trusted and row["license"] == "unknown" and check_ncs_artist(best["artist"]):
+                        row["license"] = "cc by"
+                        row["source"]  = "ncs"
+                        row["notes"]   = "AcousticID artist matches NCS roster — CC BY"
+
+                    # --- Step 8: MusicBrainz license lookup ---
                     if artist_trusted and best["recording_id"] and row["license"] == "unknown":
                         mb_lic, mb_note = lookup_musicbrainz(best["recording_id"])
                         if mb_lic:
                             row["license"] = mb_lic
                             row["notes"]   = mb_note
 
-                    # --- Step 8: NCS check on AcousticID artist ---
-                    if artist_trusted and row["license"] == "unknown" and check_ncs_artist(best["artist"]):
-                        row["license"] = "cc by"
-                        row["source"]  = "ncs"
-                        row["notes"]   = "AcousticID artist matches NCS roster — CC BY"
-
                     # --- Step 9: Jamendo lookup ---
                     if row["license"] == "unknown" and (row["title"] or row["artist"]):
-                        j_lic, j_src = lookup_jamendo(row["title"], row["artist"])
+                        j_lic, j_src, j_actual = lookup_jamendo(row["title"], row["artist"])
                         if j_lic:
                             row["license"] = j_lic
                             row["source"]  = j_src or "jamendo"
-                            row["notes"]   = "License found on Jamendo"
+                            row["notes"]   = f"Jamendo match found ({j_actual}) — verify before use"
 
                     # --- Step 10: High-confidence fallback ---
                     # Only apply if artist matches (or no tag artist to compare against)
@@ -584,6 +597,8 @@ def scan_library(folder):
                 row["safe_to_use"] = "NO - all rights reserved (confirmed)"
             elif lic == "assumed commercial":
                 row["safe_to_use"] = "NO - assumed commercial (verify if unsure)"
+            elif lic == "assumed free":
+                row["safe_to_use"] = "VERIFY - possibly free (Jamendo match, check manually)"
             else:
                 row["safe_to_use"] = "UNKNOWN - verify manually"
 

@@ -32,10 +32,15 @@ CATEGORIES = {
         "filename": "free_noncommercial_only.csv",
         "label":    "Free — non-commercial only",
     },
+    "assumed_free": {
+        "licenses": {"assumed free"},
+        "filename": "assumed_free_verify.csv",
+        "label":    "Possibly free (Jamendo match — verify manually)",
+    },
     "not_free_confirmed": {
         "licenses": {"all rights reserved"},
         "filename": "not_free_confirmed.csv",
-        "label":    "All rights reserved (confirmed by label/MusicBrainz)",
+        "label":    "All rights reserved (confirmed by MusicBrainz)",
     },
     "not_free_assumed": {
         "licenses": {"assumed commercial"},
